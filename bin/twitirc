@@ -1,0 +1,203 @@
+#!/usr/bin/env perl
+
+use AnyEvent;
+use AnyEvent::IRC::Util qw/ is_nick_prefix split_prefix prefix_nick /;
+use AnyEvent::IRC::Client;
+use AnyEvent::Twitter;
+use AnyEvent::Twitter::Stream;
+use FindBin qw($Bin);
+use File::Slurp;
+use JSON;
+
+my $config_file = "$Bin/../conf/twitirc.conf";
+my $config      = decode_json(read_file($config_file));
+
+our $command = {
+    help => \&command_help,
+    twit => \&command_twit,
+    filter => \&command_filter,
+};
+
+my $c = AnyEvent->condvar;
+
+# Setup twitter client
+my $twitter_client = AnyEvent::Twitter->new(
+    consumer_key        => $config->{twitter}{consumer_key},
+    consumer_secret     => $config->{twitter}{consumer_secret},
+    access_token        => $config->{twitter}{access_token},
+    access_token_secret => $config->{twitter}{access_token_secret},
+);
+
+# setup irc client
+my $irc = new AnyEvent::IRC::Client;
+$irc->reg_cb (
+    connect => sub {
+        my ($irc, $err) = @_;
+        if (defined $err) { warn "connect error: $err\n"; return; }
+        print "Connected to irc server\n";
+    },
+    registered => sub { 
+        my $irc = shift;
+        $irc->send_msg('join', $_) for @{$config->{channels}};
+    },
+    disconnect => sub { $c->send; }, # I should re-connect
+    publicmsg => sub {
+        my ($irc, $channel, $msg) = @_;
+        my $from = prefix_nick( $msg );
+        my ($dest_nick, $text) = $msg->{params}[1] =~ /^\s*(?:(\S+)\s*:\s*)?(.+?)\s*$/;
+        if ( $text =~ /^!(\S+)\s+(.+)$/ && ( !$dest_nick || $irc->is_my_nick($dest_nick) ) ) {
+            command_dispatch($irc, $channel, $from, $1 => $2 );
+        }
+        elsif ( $dest_nick && $irc->is_my_nick($dest_nick) ) {
+            message_to_self( $irc, $channel, $from, $text );
+        }
+        elsif ( $dest_nick ) {
+            message_to_other( $irc, $channel, $from, $dest_nick, $text );
+        }
+        else {
+            message_to_channel( $irc, $channel, $from, $msg->{params}[1] );
+        }
+    },
+    privatemsg => sub {
+        my ($irc, $to, $msg) = @_;
+        if ( is_nick_prefix( $msg->{prefix} ) ) {
+            my $from = prefix_nick( $msg );
+            private_message( $irc, $from, $msg->{params}[1] );
+        }
+    },
+);
+
+$irc->connect(
+    $config->{host}, 
+    $config->{port} || 6667, 
+    { 
+        nick => $config->{nickname} || 'hacktibot', 
+        user => $config->{user} || 'hacktibot',
+        real => $config->{real} || 'hacktivistas.net',
+    }
+);
+
+# setup twitter stream filter
+my $twitter_stream = build_twitter_stream();
+
+sub build_twitter_stream {
+    AnyEvent::Twitter::Stream->new(
+        consumer_key    => $config->{twitter}{consumer_key},
+        consumer_secret => $config->{twitter}{consumer_secret},
+        token           => $config->{twitter}{access_token},
+        token_secret    => $config->{twitter}{access_token_secret},
+        method          => "filter",
+        track           => $config->{twitter}{filter},
+        on_tweet        => sub {
+            my $twit = shift;
+            my $rt = $twit->{retweeted} ? ' (♺)' : '';
+            my $url = twit_url($twit);
+            $irc->send_srv('PRIVMSG', $config->{channels}[0], "$twit->{user}{screen_name}: $twit->{text} [$url]$rt");
+        },
+    );
+}
+
+my $sigint = AnyEvent->signal(
+    signal => "INT", 
+    cb     => sub { 
+        $irc->send_srv('PRIVMSG', $_, "I was killed by a unix signal, bye!") for @{$config->{channels}};
+        $irc->disconnect;
+    }
+);
+
+$c->recv;
+
+sub private_message {}
+sub message_to_self {
+    my ( $irc, $channel, $from, $msg ) = @_;
+    $irc->send_srv('PRIVMSG', $channel, "$from: ok");
+}
+sub message_to_channel {}
+sub message_to_other {}
+
+sub command_dispatch {
+    my ($irc, $channel, $from, $cmd, $arg ) = @_;
+    my $modes = $irc->nick_modes($channel, $from);
+
+    if ( $modes->{o} ) { # only op's or voice's can givme orders
+        if ( exists $command->{ $cmd } ) {
+            $command->{ $cmd }->($irc, $channel, $from, $arg);
+        }
+        else {
+            $irc->send_srv('PRIVMSG', $channel, "$from: hm... no entiendo que quieres que haga.");
+        }
+    }
+    else {
+        $irc->send_srv('PRIVMSG', $channel, "$from: no me fio de ti, lo siento.");
+    }
+}
+
+sub command_help {
+    my ($irc, $channel, $from, $arg) = @_;
+    $irc->send_srv('PRIVMSG', $channel, "$from: de momento solo se tuitear -> !twit el mensaje que sea");
+}
+
+sub command_twit {
+    my ($irc, $channel, $from, $arg) = @_;
+    if ( length $arg <= 140 ) {
+        $irc->send_srv('PRIVMSG', $channel, "$from: ok, lo envio ;-)");
+        $twitter_client->post('statuses/update', {status => $arg}, sub {
+            my ($hdr, $resp, $err) = @_;
+            if ( $resp ) {
+                my $url = twit_url($resp);
+                $irc->send_srv('PRIVMSG', $channel, "$from: $url");
+            }
+            else {
+                $irc->send_srv('PRIVMSG', $channel, "$from: no lo he podido enviar -> $err");
+            }
+        });
+    }
+    else {
+        $irc->send_srv('PRIVMSG', $channel, "$from: el mensaje es mas largo que 140 caracteres, no lo puedo enviar.");
+    }
+}
+
+sub command_filter {
+    my ($irc, $channel, $from, $arg) = @_;
+    my ( $cmd, $arg ) = split( /\s+/, $arg );
+    my $update_config = 0;
+
+    if ( $cmd eq 'add' ) {
+        $config->{twitter}{filter} = join ',', ( split(/\s*,\s*/,$config->{twitter}{filter}), $arg );
+        $update_config++;
+    }
+    elsif ( $cmd eq 'del' ) {
+        $config->{twitter}{filter} = join ',', 
+                                     grep { $_ ne $arg } 
+                                     split(/\s*,\s*/,$config->{twitter}{filter});
+        $update_config++;
+    }
+    elsif ( $cmd eq 'view' ) {
+        my $words = $config->{twitter}{filter};
+        $irc->send_srv('PRIVMSG', $channel, "$from: $words");
+    }
+    else {
+        $irc->send_srv('PRIVMSG', $channel, "$from: !filter [add|del|view] [word]");
+    }
+
+    if ( $update_config ) {
+        $irc->send_srv('PRIVMSG', $channel, "$from: ok!, he modificado el filtro ;-)");
+        save_config();
+    }
+}
+
+sub twit_url {
+    my $msg = shift;
+    my ( $sname, $id ) = ( $msg->{user}{screen_name}, $msg->{id} );
+
+    if ( $sname && $id ) {
+        return "http://twitter.com/#!/$sname/status/$id";
+    }
+
+    return '';
+}
+
+sub save_config {
+    write_file( $config_file, JSON->indent(1)->utf8(1)->encode($config) );
+}
+

@@ -1,0 +1,4 @@
+*.swp
+screenrc
+tmp/*
+.DS_Store
