@@ -2,3 +2,4 @@
 screenrc
 tmp/*
 .DS_Store
+conf/*
