@@ -1,10 +1,13 @@
 #!/usr/bin/env perl
 
+use strict;
+use utf8;
 use AnyEvent;
 use AnyEvent::IRC::Util qw/ is_nick_prefix split_prefix prefix_nick /;
 use AnyEvent::IRC::Client;
 use AnyEvent::Twitter;
 use AnyEvent::Twitter::Stream;
+use Encode;
 use FindBin qw($Bin);
 use File::Slurp;
 use JSON;
@@ -45,7 +48,7 @@ $irc->reg_cb (
         my ($irc, $channel, $msg) = @_;
         my $from = prefix_nick( $msg );
         my ($dest_nick, $text) = $msg->{params}[1] =~ /^\s*(?:(\S+)\s*:\s*)?(.+?)\s*$/;
-        if ( $text =~ /^!(\S+)\s+(.+)$/ && ( !$dest_nick || $irc->is_my_nick($dest_nick) ) ) {
+        if ( $text =~ /^!(\S+)(?:\s+(.+))$/ && ( !$dest_nick || $irc->is_my_nick($dest_nick) ) ) {
             command_dispatch($irc, $channel, $from, $1 => $2 );
         }
         elsif ( $dest_nick && $irc->is_my_nick($dest_nick) ) {
@@ -90,9 +93,16 @@ sub build_twitter_stream {
         track           => $config->{twitter}{filter},
         on_tweet        => sub {
             my $twit = shift;
-            my $rt = $twit->{retweeted} ? ' (♺)' : '';
-            my $url = twit_url($twit);
-            $irc->send_srv('PRIVMSG', $config->{channels}[0], "$twit->{user}{screen_name}: $twit->{text} [$url]$rt");
+            my $rt   = $twit->{retweeted} ? ' (RT)' : '';
+            my $url  = twit_url($twit);
+            my $user = encode('utf8', $twit->{user}{screen_name});
+            my $txt  = encode('utf8', $twit->{text});
+            $irc->send_srv('PRIVMSG', $config->{channels}[0], "\@$user: $txt [ $url ]$rt");
+        },
+        on_error        => sub { 
+            print 'Twitter feed error: ', @_, "\n"; 
+            print "Reinitializing feed\n"; 
+            $twitter_stream = build_twitter_stream();
         },
     );
 }
@@ -134,12 +144,15 @@ sub command_dispatch {
 
 sub command_help {
     my ($irc, $channel, $from, $arg) = @_;
-    $irc->send_srv('PRIVMSG', $channel, "$from: de momento solo se tuitear -> !twit el mensaje que sea");
+    $irc->send_srv('PRIVMSG', $channel, "$from: !twit el mensaje que sea");
 }
 
 sub command_twit {
     my ($irc, $channel, $from, $arg) = @_;
-    if ( length $arg <= 140 ) {
+    if ( ! length $arg ) {
+        $irc->send_srv('PRIVMSG', $channel, "$from: no puedo enviar un mensaje vacio.");
+    }
+    elsif ( length $arg <= 140 ) {
         $irc->send_srv('PRIVMSG', $channel, "$from: ok, lo envio ;-)");
         $twitter_client->post('statuses/update', {status => $arg}, sub {
             my ($hdr, $resp, $err) = @_;
@@ -182,6 +195,7 @@ sub command_filter {
 
     if ( $update_config ) {
         $irc->send_srv('PRIVMSG', $channel, "$from: ok!, he modificado el filtro ;-)");
+        $twitter_stream = build_twitter_stream();
         save_config();
     }
 }
@@ -198,6 +212,6 @@ sub twit_url {
 }
 
 sub save_config {
-    write_file( $config_file, JSON->indent(1)->utf8(1)->encode($config) );
+    write_file( $config_file, JSON->new->indent(1)->utf8(1)->encode($config) );
 }
 
