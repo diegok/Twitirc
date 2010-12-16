@@ -47,8 +47,9 @@ $irc->reg_cb (
     publicmsg => sub {
         my ($irc, $channel, $msg) = @_;
         my $from = prefix_nick( $msg );
-        my ($dest_nick, $text) = $msg->{params}[1] =~ /^\s*(?:(\S+)\s*:\s*)?(.+?)\s*$/;
-        if ( $text =~ /^!(\S+)(?:\s+(.+))$/ && ( !$dest_nick || $irc->is_my_nick($dest_nick) ) ) {
+        my $msg_txt = decode( 'utf8', $msg->{params}[1] );
+        my ($dest_nick, $text) = $msg_txt =~ /^\s*(?:(\S+)\s*:\s*)?(.+?)\s*$/;
+        if ( $text =~ /^!(\S+)(?:\s+(.+))?$/ && ( !$dest_nick || $irc->is_my_nick($dest_nick) ) ) {
             command_dispatch($irc, $channel, $from, $1 => $2 );
         }
         elsif ( $dest_nick && $irc->is_my_nick($dest_nick) ) {
@@ -129,7 +130,7 @@ sub command_dispatch {
     my ($irc, $channel, $from, $cmd, $arg ) = @_;
     my $modes = $irc->nick_modes($channel, $from);
 
-    if ( $modes->{o} ) { # only op's or voice's can givme orders
+    if ( $modes->{o} || $modes->{v} ) { # only op's or voice's can givme orders
         if ( exists $command->{ $cmd } ) {
             $command->{ $cmd }->($irc, $channel, $from, $arg);
         }
