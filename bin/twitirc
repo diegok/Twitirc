@@ -19,6 +19,7 @@ our $command = {
     help   => \&command_help,
     twit   => \&command_tweet,
     tweet  => \&command_tweet,
+    retweet  => \&command_retweet,
     filter => \&command_filter,
 };
 
@@ -150,11 +151,14 @@ sub command_help {
     if ( $arg =~ /^\s*!?(?:twit|tweet)\s*$/) {
         $irc->send_srv('PRIVMSG', $channel, "$from: !tweet el mensaje que quieras enviar a twitter");
     }
+    if ( $arg =~ /^\s*!?retweet\s*$/) {
+        $irc->send_srv('PRIVMSG', $channel, "$from: !retweet tweetID");
+    }
     elsif ( $arg =~ /^\s*!?filter\s*$/) {
         $irc->send_srv('PRIVMSG', $channel, "$from: !filter [[add|remove] palabra|view] <-- Para modificar el filtro de búsqueda");
     }
     else {
-        $irc->send_srv('PRIVMSG', $channel, "$from: !help [tweet|filter|help]");
+        $irc->send_srv('PRIVMSG', $channel, "$from: !help [tweet|retweet|filter|help]");
     }
 }
 
@@ -178,6 +182,26 @@ sub command_tweet {
     }
     else {
         $irc->send_srv('PRIVMSG', $channel, "$from: el mensaje es mas largo que 140 caracteres, no lo puedo enviar.");
+    }
+}
+
+sub command_retweet {
+    my ($irc, $channel, $from, $arg) = @_;
+    if ( ! length $arg || $arg !~ /^\d+$/ ) {
+        $irc->send_srv('PRIVMSG', $channel, "$from: necesito un ID para hacer retweet (el nro del final de la url del tweet)");
+    }
+    else {
+        $irc->send_srv('PRIVMSG', $channel, "$from: ok, le hago retweet ;-)");
+        $twitter_client->post('statuses/retweet/' . $arg, {}, sub {
+            my ($hdr, $resp, $err) = @_;
+            if ( $resp ) {
+                my $url = twit_url($resp);
+                $irc->send_srv('PRIVMSG', $channel, "$from: $url");
+            }
+            else {
+                $irc->send_srv('PRIVMSG', $channel, "$from: no he podido hacer el retweet -> $err");
+            }
+        });
     }
 }
 
