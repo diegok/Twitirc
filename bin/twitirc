@@ -7,10 +7,11 @@ use AnyEvent::IRC::Util qw/ is_nick_prefix split_prefix prefix_nick /;
 use AnyEvent::IRC::Client;
 use AnyEvent::Twitter;
 use AnyEvent::Twitter::Stream;
-use Encode;
 use FindBin qw($Bin);
 use File::Slurp;
 use JSON;
+use Encode;
+use Encode::Guess qw/ latin1 /;
 
 my $config_file = "$Bin/../conf/twitirc.conf";
 my $config      = decode_json(read_file($config_file));
@@ -20,10 +21,12 @@ our $command = {
     twit   => \&command_tweet,
     tweet  => \&command_tweet,
     retweet  => \&command_retweet,
+    reply  => \&command_reply,
     filter => \&command_filter,
 };
 
 my $c = AnyEvent->condvar;
+my $timer;
 
 # Setup twitter client
 my $twitter_client = AnyEvent::Twitter->new(
@@ -45,11 +48,27 @@ $irc->reg_cb (
         my $irc = shift;
         $irc->send_msg('join', $_) for @{$config->{channels}};
     },
-    disconnect => sub { $c->send; }, # I should re-connect
+    disconnect => sub { # I should re-connect
+        print "Disconnected, waiting 30 secs to reconnect.";
+        $timer = AnyEvent->timer (
+            after => 30,
+            cb => sub {
+                undef $timer;
+                print "Attempting to reconnect on IRC";
+                $irc->connect( build_connect_data() );
+            }
+        );
+    }, 
     publicmsg => sub {
         my ($irc, $channel, $msg) = @_;
         my $from = prefix_nick( $msg );
-        my ($dest_nick, $text) = decode('utf8', $msg->{params}[1]) =~ /^\s*(?:(\S+)\s*:\s*)?(.+?)\s*$/;
+
+        my $decoder = Encode::Guess->guess($msg->{params}[1]);
+        my $msg_text = ref($decoder) 
+                     ? $decoder->decode($msg->{params}[1])
+                     : decode('utf8', $msg->{params}[1]);
+
+        my ($dest_nick, $text) = $msg_text =~ /^\s*(?:(\S+)\s*:\s*)?(.+?)\s*$/;
         if ( $text =~ /^!(\S+)(?:\s+(.+))?$/ && ( !$dest_nick || $irc->is_my_nick($dest_nick) ) ) {
             command_dispatch($irc, $channel, $from, $1 => $2 );
         }
@@ -72,15 +91,19 @@ $irc->reg_cb (
     },
 );
 
-$irc->connect(
-    $config->{host}, 
-    $config->{port} || 6667, 
-    { 
-        nick => $config->{nickname} || 'hacktibot', 
-        user => $config->{user} || 'hacktibot',
-        real => $config->{real} || 'hacktivistas.net',
-    }
-);
+$irc->connect( build_connect_data() );
+
+sub build_connect_data {
+    return (
+        $config->{host}, 
+        $config->{port} || 6667, 
+        { 
+            nick => $config->{nickname} || 'hacktibot', 
+            user => $config->{user} || 'hacktibot',
+            real => $config->{real} || 'hacktivistas.net',
+        }
+    );
+}
 
 # setup twitter stream filter
 my $twitter_stream = build_twitter_stream();
@@ -98,7 +121,8 @@ sub build_twitter_stream {
             my $rt   = $twit->{retweeted} ? ' (RT)' : '';
             my $url  = twit_url($twit);
             my $user = encode('utf8', $twit->{user}{screen_name});
-            my $txt  = encode('utf8', $twit->{text});
+            my $txt  = $twit->{text}; $txt =~ s/\n/ /gsm;
+               $txt  = encode('utf8', $txt);
             $irc->send_srv('PRIVMSG', $config->{channels}[0], "\@$user: $txt [ $url ]$rt");
         },
         on_error        => sub { 
@@ -113,7 +137,7 @@ my $sigint = AnyEvent->signal(
     signal => "INT", 
     cb     => sub { 
         $irc->send_srv('PRIVMSG', $_, "I was killed by a unix signal, bye!") for @{$config->{channels}};
-        $irc->disconnect;
+        $c->send;
     }
 );
 
@@ -151,14 +175,17 @@ sub command_help {
     if ( $arg =~ /^\s*!?(?:twit|tweet)\s*$/) {
         $irc->send_srv('PRIVMSG', $channel, "$from: !tweet el mensaje que quieras enviar a twitter");
     }
-    if ( $arg =~ /^\s*!?retweet\s*$/) {
+    elsif ( $arg =~ /^\s*!?retweet\s*$/) {
         $irc->send_srv('PRIVMSG', $channel, "$from: !retweet tweetID");
     }
+    elsif ( $arg =~ /^\s*!?reply\s*$/) {
+        $irc->send_srv('PRIVMSG', $channel, "$from: !reply tweetID el mensaje con el que respondes");
+    }
     elsif ( $arg =~ /^\s*!?filter\s*$/) {
-        $irc->send_srv('PRIVMSG', $channel, "$from: !filter [[add|remove] palabra|view] <-- Para modificar el filtro de búsqueda");
+        $irc->send_srv('PRIVMSG', $channel, "$from: !filter [[add|del] palabra|view] <-- Para modificar el filtro de búsqueda");
     }
     else {
-        $irc->send_srv('PRIVMSG', $channel, "$from: !help [tweet|retweet|filter|help]");
+        $irc->send_srv('PRIVMSG', $channel, "$from: !help [tweet|retweet|reply|filter|help]");
     }
 }
 
@@ -170,6 +197,30 @@ sub command_tweet {
     elsif ( length $arg <= 140 ) {
         $irc->send_srv('PRIVMSG', $channel, "$from: ok, lo envio ;-)");
         $twitter_client->post('statuses/update', {status => $arg}, sub {
+            my ($hdr, $resp, $err) = @_;
+            if ( $resp ) {
+                my $url = twit_url($resp);
+                $irc->send_srv('PRIVMSG', $channel, "$from: $url");
+            }
+            else {
+                $irc->send_srv('PRIVMSG', $channel, "$from: no lo he podido enviar -> $err");
+            }
+        });
+    }
+    else {
+        $irc->send_srv('PRIVMSG', $channel, "$from: el mensaje es mas largo que 140 caracteres, no lo puedo enviar.");
+    }
+}
+
+sub command_reply {
+    my ($irc, $channel, $from, $arg) = @_;
+    my ($id, $msg) = $arg =~ /^(\d+)\s+\.+$/;
+    if ( !$id || !$msg ) {
+        $irc->send_srv('PRIVMSG', $channel, "$from: tienes que darme un id seguido por la respuesta a ese update. Mira la ayuda ;-)");
+    }
+    elsif ( length $msg <= 140 ) {
+        $irc->send_srv('PRIVMSG', $channel, "$from: ok, respondo ;-)");
+        $twitter_client->post('statuses/update', {status => $msg, in_reply_to_status_id => $id}, sub {
             my ($hdr, $resp, $err) = @_;
             if ( $resp ) {
                 my $url = twit_url($resp);
