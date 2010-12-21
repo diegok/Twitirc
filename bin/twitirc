@@ -12,6 +12,7 @@ use File::Slurp;
 use JSON;
 use Encode;
 use Encode::Guess qw/ latin1 /;
+use Data::Dumper;
 
 my $config_file = "$Bin/../conf/twitirc.conf";
 my $config      = decode_json(read_file($config_file));
@@ -23,6 +24,7 @@ our $command = {
     retweet  => \&command_retweet,
     reply  => \&command_reply,
     filter => \&command_filter,
+    broadcast_rt => \&command_broadcast_rt,
 };
 
 my $c = AnyEvent->condvar;
@@ -117,13 +119,19 @@ sub build_twitter_stream {
         method          => "filter",
         track           => $config->{twitter}{filter},
         on_tweet        => sub {
-            my $twit = shift;
-            my $rt   = $twit->{retweeted} ? ' (RT)' : '';
-            my $url  = twit_url($twit);
-            my $user = encode('utf8', $twit->{user}{screen_name});
-            my $txt  = $twit->{text}; $txt =~ s/\n/ /gsm;
-               $txt  = encode('utf8', $txt);
-            $irc->send_srv('PRIVMSG', $config->{channels}[0], "\@$user: $txt [ $url ]$rt");
+            my $tweet = shift;
+            my $user = '@' . encode('utf8', $tweet->{user}{screen_name});
+            if ( exists $tweet->{retweeted_status} && $config->{broadcast_rt} ) {
+                my $url  = twit_url($tweet->{retweeted_status});
+                my $rt_count = $tweet->{retweet_count};
+                $irc->send_srv('PRIVMSG', $config->{channels}[0], "RT[$rt_count] $url by $user");
+            }
+            else {
+                my $url  = twit_url($tweet);
+                my $txt  = $tweet->{text}; $txt =~ s/\n/ /gsm;
+                   $txt  = encode('utf8', $txt);
+                $irc->send_srv('PRIVMSG', $config->{channels}[0], "$user: $txt [ $url ]");
+            }
         },
         on_error        => sub { 
             print 'Twitter feed error: ', @_, "\n"; 
@@ -184,8 +192,11 @@ sub command_help {
     elsif ( $arg =~ /^\s*!?filter\s*$/) {
         $irc->send_srv('PRIVMSG', $channel, "$from: !filter [[add|del] palabra|view] <-- Para modificar el filtro de búsqueda");
     }
+    elsif ( $arg =~ /^\s*!?broadcast_rt\s*$/) {
+        $irc->send_srv('PRIVMSG', $channel, "$from: !broadcast_rt [on|off|status] <-- Mostrar o no mostrar los RT's");
+    }
     else {
-        $irc->send_srv('PRIVMSG', $channel, "$from: !help [tweet|retweet|reply|filter|help]");
+        $irc->send_srv('PRIVMSG', $channel, "$from: !help [tweet|retweet|reply|filter|broadcast_rt|help]");
     }
 }
 
@@ -283,6 +294,26 @@ sub command_filter {
         $irc->send_srv('PRIVMSG', $channel, "$from: ok!, he modificado el filtro ;-)");
         $twitter_stream = build_twitter_stream();
         save_config();
+    }
+}
+
+sub command_broadcast_rt {
+    my ($irc, $channel, $from, $arg) = @_;
+
+    if ( $arg =~ /^on$/i ) {
+        $config->{broadcast_rt} = 1;
+        save_config();
+    }
+    elsif ( $arg =~ /^off$/i ) {
+        $config->{broadcast_rt} = 0;
+        save_config();
+    }
+
+    if ($config->{broadcast_rt}) {
+        $irc->send_srv('PRIVMSG', $channel, "$from: retweet broadcast is active" );
+    }
+    else {
+        $irc->send_srv('PRIVMSG', $channel, "$from: retweets are hidden from channel" );
     }
 }
 
