@@ -1,0 +1,75 @@
+=head1 Twitirc
+
+    IRC bot to filter twitter stream api and to publish updates.
+
+=head3 Version 0.1
+
+=head2 Install
+    
+If you have curl, you can install all you need just running:
+
+    > bin/install_deps.sh
+
+=head2 Config
+
+    conf/twitirc.conf
+
+Just a json file for IRC and twitter configuration and state storage.
+
+    {
+       "host":     "irc.perl.org",
+       "nickname": "twitirc",
+       "channels": [ "#madrid.pm" ],
+       "twitter":  {
+          "filter":"perl,madrid,perlmongers",
+          "access_token_secret":"XXX",
+          "access_token":"XXX",
+          "consumer_secret":"XXX",
+          "consumer_key":"XXX"
+       }
+    }
+
+=head2 Run
+
+    bin/twitirc
+
+=head2 Commands
+
+Any message sended on the channels the bot is listening that start with
+exclamation mark (!command) are interpreted as a command, then, no all
+commands exists, so, try !help
+
+Only channel op/voice's are trusted by the bot.
+
+=head3 !help
+
+Ask for bot usage to himself.
+
+=head3 !filter [ view | [add|del] term ]
+
+View or modify search terms for the live twitter stream api. Messages
+passing this filter will be broadcasted to the first configured channel.
+
+=head3 !tweet [ text to update twitter ]
+
+Post an update to the bot twitter account.
+
+=head3 !retweet [ other tweet ID ]
+
+Retweet by api ID.
+
+=head3 !reply [ other tweet ID ] [ reply message ]
+
+Reply some tweet by its api ID.
+
+=head3 !broadcast_rt [ on | off ]
+
+Broadcast filtered retweets or not. That's the question!
+
+=cut
+
+=head2 Licence
+
+This program is free software; you can redistribute it and/or modify it under the terms of either: the GNU General Public License as published by the Free Software Foundation; or the Artistic License.
+
+See http://dev.perl.org/licenses/ for more information.
