@@ -1,6 +1,6 @@
 =head1 Twitirc
 
-    IRC bot to filter twitter stream api and to publish updates.
+IRC bot to filter twitter stream api and to publish updates.
 
 =head3 Version 0.1
 
