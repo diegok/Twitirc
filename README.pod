@@ -29,6 +29,11 @@ Just a json file for IRC and twitter configuration and state storage.
        }
     }
 
+Do you need help getting oauth credentials from twitter for your bot?, 
+just exec:
+
+    bin/get_token
+
 =head2 Run
 
     bin/twitirc
