@@ -25,6 +25,9 @@ our $command = {
     reply  => \&command_reply,
     filter => \&command_filter,
     broadcast_rt => \&command_broadcast_rt,
+    op     => {
+        trust => \&command_trust,
+    }
 };
 
 my $c = AnyEvent->condvar;
@@ -91,21 +94,43 @@ $irc->reg_cb (
             private_message( $irc, $from, $msg->{params}[1] );
         }
     },
+    join =>  sub {
+        my ( $irc, $nick, $channel, $is_myself ) = @_;
+
+        unless ( $is_myself ) {
+            if ( exists $config->{trust}{$channel} && exists $config->{trust}{$channel}{$nick} ) {
+                give_op( $irc => $channel => $nick );
+            }
+        } 
+    },
+    channel_nickmode_update => sub {
+        my ( $irc, $channel, $dest ) = @_;
+        if ( $irc->is_my_nick( $dest ) ) {
+            my $modes = $irc->nick_modes($channel, $dest);
+            if ( exists $modes->{o} && exists $config->{trust}{$channel} ) {
+                give_op( $irc => $channel => $_ ) for keys %{$config->{$channel}{trust}};
+            }
+        }
+    },
+    nick_change => sub {
+        my ( $irc, $old_nick, $new_nick, $is_myself ) = @_;
+        unless ( $is_myself ) {
+            for my $channel ( @{$config->{channels}} ) {
+                if ( exists $config->{trust}{$channel} && exists $config->{trust}{$channel}{$new_nick} ) {
+                    give_op( $irc => $channel => $new_nick );
+                }
+                elsif ( exists $config->{trust}{$channel} && not exists $config->{trust}{$channel}{$new_nick} ) {
+                    my $modes = $irc->nick_modes($channel, $new_nick);
+                    if ( exists $modes->{o} ) {
+                        take_op( $irc => $channel => $new_nick );
+                    }
+                }
+            }
+        }
+    },
 );
 
 $irc->connect( build_connect_data() );
-
-sub build_connect_data {
-    return (
-        $config->{host}, 
-        $config->{port} || 6667, 
-        { 
-            nick => $config->{nickname} || 'hacktibot', 
-            user => $config->{user} || 'hacktibot',
-            real => $config->{real} || 'hacktivistas.net',
-        }
-    );
-}
 
 # setup twitter stream filter
 my $twitter_stream = build_twitter_stream();
@@ -164,7 +189,10 @@ sub command_dispatch {
     my $modes = $irc->nick_modes($channel, $from);
 
     if ( $modes->{o} || $modes->{v} ) { # only op's or voice's can givme orders
-        if ( exists $command->{ $cmd } ) {
+        if ( $modes->{o} && exists $command->{op}{ $cmd } ) {
+            $command->{op}{ $cmd }->($irc, $channel, $from, $arg);
+        }
+        elsif ( exists $command->{ $cmd } ) {
             $command->{ $cmd }->($irc, $channel, $from, $arg);
         }
         else {
@@ -317,8 +345,34 @@ sub command_broadcast_rt {
     }
 }
 
+sub command_trust {
+    my ($irc, $channel, $from, $arg) = @_;
+
+    unless ( $arg ) {
+        $irc->send_srv('PRIVMSG', $channel, "$from: I always trust nobody ;)" );
+        return;
+    }
+
+    if ( my $modes = $irc->nick_modes($channel, $arg ) ) {
+        $irc->send_srv('PRIVMSG', $channel, "$from: Ok, I trust if you trust ;)" );
+        $config->{trust}{$channel}{$arg} = $from;
+        save_config();
+        give_op($irc, $channel, $arg);
+    }
+}
+
+sub give_op {
+    my ($irc, $channel, $nick) = @_;
+    $irc->send_msg( 'MODE', $channel, '+o', $nick);
+}
+sub take_op {
+    my ($irc, $channel, $nick) = @_;
+    $irc->send_msg( 'MODE', $channel, '-o', $nick);
+}
+
 sub twit_url {
     my $msg = shift;
+
     my ( $sname, $id ) = ( $msg->{user}{screen_name}, $msg->{id} );
 
     if ( $sname && $id ) {
@@ -330,5 +384,18 @@ sub twit_url {
 
 sub save_config {
     write_file( $config_file, JSON->new->indent(1)->utf8(1)->encode($config) );
+}
+
+# build AE::IRC::Client connect params from global $config
+sub build_connect_data {
+    return (
+        $config->{host}, 
+        $config->{port} || 6667, 
+        { 
+            nick => $config->{nickname} || 'hacktibot', 
+            user => $config->{user} || 'hacktibot',
+            real => $config->{real} || 'hacktivistas.net',
+        }
+    );
 }
 
