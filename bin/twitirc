@@ -149,7 +149,17 @@ sub build_twitter_stream {
             if ( exists $tweet->{retweeted_status} && $config->{broadcast_rt} ) {
                 my $url  = twit_url($tweet->{retweeted_status});
                 my $rt_count = $tweet->{retweet_count};
-                $irc->send_srv('PRIVMSG', $config->{channels}[0], "RT[$rt_count] $url by $user");
+                if ( $config->{broadcast_rt} eq 'step' ) {
+                    if ( $rt_count == 5 || $rt_count % 10 == 0 ) {
+                        my $txt  = $tweet->{retweeted_status}{text}; 
+                        $txt =~ s/\n/ /gsm;
+                        $txt  = encode('utf8', $txt);
+                        $irc->send_srv('PRIVMSG', $config->{channels}[0], "RT[$rt_count] $user: $txt [ $url ]");
+                    }
+                }
+                else {
+                    $irc->send_srv('PRIVMSG', $config->{channels}[0], "RT[$rt_count] $url by $user");
+                }
             }
             else {
                 my $url  = twit_url($tweet);
@@ -221,7 +231,7 @@ sub command_help {
         $irc->send_srv('PRIVMSG', $channel, "$from: !filter [[add|del] palabra|view] <-- Para modificar el filtro de búsqueda");
     }
     elsif ( $arg =~ /^\s*!?broadcast_rt\s*$/) {
-        $irc->send_srv('PRIVMSG', $channel, "$from: !broadcast_rt [on|off|status] <-- Mostrar o no mostrar los RT's");
+        $irc->send_srv('PRIVMSG', $channel, "$from: !broadcast_rt [on|step|off|status] <-- Mostrar o no mostrar los RT's");
     }
     else {
         $irc->send_srv('PRIVMSG', $channel, "$from: !help [tweet|retweet|reply|filter|broadcast_rt|help]");
@@ -330,6 +340,10 @@ sub command_broadcast_rt {
 
     if ( $arg =~ /^on$/i ) {
         $config->{broadcast_rt} = 1;
+        save_config();
+    }
+    elsif ( $arg =~ /^step$/i ) {
+        $config->{broadcast_rt} = 'step';
         save_config();
     }
     elsif ( $arg =~ /^off$/i ) {
