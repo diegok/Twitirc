@@ -27,6 +27,8 @@ our $command = {
     broadcast_rt => \&command_broadcast_rt,
     op     => {
         trust => \&command_trust,
+        untrust => \&command_untrust,
+        whotrust => \&command_whotrust,
     }
 };
 
@@ -233,8 +235,14 @@ sub command_help {
     elsif ( $arg =~ /^\s*!?broadcast_rt\s*$/) {
         $irc->send_srv('PRIVMSG', $channel, "$from: !broadcast_rt [on|step|off|status] <-- Mostrar o no mostrar los RT's");
     }
+    elsif ( $arg =~ /^\s*!?(?:un)?trust\s*$/) {
+        $irc->send_srv('PRIVMSG', $channel, "$from: ![trust|untrust] nickname <-- Darle o quitarle op a alguien");
+    }
+    elsif ( $arg =~ /^\s*!?whotrust\s*$/) {
+        $irc->send_srv('PRIVMSG', $channel, "$from: !whotrust [nickname] <-- En quien confia el bot?, quien se lo ha dicho?");
+    }
     else {
-        $irc->send_srv('PRIVMSG', $channel, "$from: !help [tweet|retweet|reply|filter|broadcast_rt|help]");
+        $irc->send_srv('PRIVMSG', $channel, "$from: !help [tweet|retweet|reply|filter|broadcast_rt|trust|untrust|whotrust|help]");
     }
 }
 
@@ -372,6 +380,47 @@ sub command_trust {
         $config->{trust}{$channel}{$arg} = $from;
         save_config();
         give_op($irc, $channel, $arg);
+    }
+}
+
+sub command_untrust {
+    my ($irc, $channel, $from, $arg) = @_;
+
+    unless ( $arg ) {
+        $irc->send_srv('PRIVMSG', $channel, "$from: I always trust nobody ;)" );
+        return;
+    }
+
+    if ( my $modes = $irc->nick_modes($channel, $arg ) ) {
+        if ( exists $config->{trust}{$channel}{$arg} ) {
+            my $who = delete $config->{trust}{$channel}{$arg};
+            $irc->send_srv('PRIVMSG', $channel, "$from: Ok, I won't trust $arg anymore!" );
+            save_config();
+            take_op($irc, $channel, $arg);
+        }
+        else {
+            $irc->send_srv('PRIVMSG', $channel, "$from: I don't trust $arg" );
+            take_op($irc, $channel, $arg);
+        }
+    }
+}
+
+sub command_whotrust {
+    my ($irc, $channel, $from, $arg) = @_;
+    
+    if ( $arg ) {
+        if ( exists $config->{trust}{$channel}{$arg} ) {
+            my $who = $config->{trust}{$channel}{$arg};
+            $irc->send_srv('PRIVMSG', $channel, "$from: $who told me to trust $arg" );
+        }
+        else {
+            $irc->send_srv('PRIVMSG', $channel, "$from: I don't trust $arg" );
+        }
+    }
+    else {
+        my $trust_list = 'I trust in ' .  join(', ', keys %{$config->{trust}{$channel}});
+        $trust_list =~ s/, ([^,]+)$/ and $1/;
+        $irc->send_srv('PRIVMSG', $channel, "$from: $trust_list" );
     }
 }
 
