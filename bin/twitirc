@@ -391,17 +391,17 @@ sub command_untrust {
         return;
     }
 
+    if ( exists $config->{trust}{$channel}{$arg} ) {
+        my $who = delete $config->{trust}{$channel}{$arg};
+        $irc->send_srv('PRIVMSG', $channel, "$from: Ok, I won't trust $arg anymore!" );
+        save_config();
+    }
+    else {
+        $irc->send_srv('PRIVMSG', $channel, "$from: I don't trust $arg" );
+    }
+
     if ( my $modes = $irc->nick_modes($channel, $arg ) ) {
-        if ( exists $config->{trust}{$channel}{$arg} ) {
-            my $who = delete $config->{trust}{$channel}{$arg};
-            $irc->send_srv('PRIVMSG', $channel, "$from: Ok, I won't trust $arg anymore!" );
-            save_config();
-            take_op($irc, $channel, $arg);
-        }
-        else {
-            $irc->send_srv('PRIVMSG', $channel, "$from: I don't trust $arg" );
-            take_op($irc, $channel, $arg);
-        }
+        take_op($irc, $channel, $arg);
     }
 }
 
