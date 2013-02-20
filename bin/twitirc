@@ -439,7 +439,7 @@ sub twit_url {
     my ( $sname, $id ) = ( $msg->{user}{screen_name}, $msg->{id} );
 
     if ( $sname && $id ) {
-        return "http://twitter.com/#!/$sname/status/$id";
+        return "https://twitter.com/$sname/status/$id";
     }
 
     return '';
